@@ -9,7 +9,12 @@ const i18n = {
         route: 'Проложить маршрут',
         error: 'Произошла ошибка. Попробуйте позже.',
         station_default: 'АЗС',
-        choose_language: 'Выберите язык:'
+        choose_language: 'Выберите язык:',
+        filter_open_now: '✅ Открыты сейчас',
+        filter_all: '🔄 Все заправки',
+        country_chosen_FR: '🇫🇷 Выбрана Франция. Введите название города:',
+        country_chosen_ES: '🇪🇸 Выбрана Испания. Введите название города:',
+        country_chosen_DE: '🇩🇪 Выбрана Германия. Введите почтовый индекс (PLZ) или город:'
     },
     uk: {
         welcome: 'Bonjour! Введіть назву міста у Франції:',
@@ -21,7 +26,12 @@ const i18n = {
         route: 'Прокласти маршрут',
         error: 'Сталася помилка. Спробуйте пізніше.',
         station_default: 'АЗС',
-        choose_language: 'Оберіть мову:'
+        choose_language: 'Оберіть мову:',
+        filter_open_now: '✅ Відчинені зараз',
+        filter_all: '🔄 Усі АЗС',
+        country_chosen_FR: '🇫🇷 Обрано Францію. Введіть назву міста:',
+        country_chosen_ES: '🇪🇸 Обрано Іспанію. Введіть назву міста:',
+        country_chosen_DE: '🇩🇪 Обрано Німеччину. Введіть поштовий індекс (PLZ) або місто:'
     },
     pl: {
         welcome: 'Bonjour! Wpisz nazwę miasta we Francji:',
@@ -33,7 +43,12 @@ const i18n = {
         route: 'Wyznacz trasę',
         error: 'Wystąpił błąd. Spróbuj później.',
         station_default: 'Stacja',
-        choose_language: 'Wybierz język:'
+        choose_language: 'Wybierz język:',
+        filter_open_now: '✅ Otwarte teraz',
+        filter_all: '🔄 Wszystkie stacje',
+        country_chosen_FR: '🇫🇷 Wybrano Francję. Wpisz nazwę miasta:',
+        country_chosen_ES: '🇪🇸 Wybrano Hiszpanię. Wpisz nazwę miasta:',
+        country_chosen_DE: '🇩🇪 Wybrano Niemcy. Wpisz kod pocztowy (PLZ) lub miasto:'
     },
     en: {
         welcome: 'Bonjour! Enter a city name in France:',
@@ -45,7 +60,12 @@ const i18n = {
         route: 'Get directions',
         error: 'An error occurred. Please try again.',
         station_default: 'Station',
-        choose_language: 'Choose language:'
+        choose_language: 'Choose language:',
+        filter_open_now: '✅ Open Now',
+        filter_all: '🔄 All Stations',
+        country_chosen_FR: '🇫🇷 France selected. Enter a city name:',
+        country_chosen_ES: '🇪🇸 Spain selected. Enter a city name:',
+        country_chosen_DE: '🇩🇪 Germany selected. Enter a postal code (PLZ) or city:'
     },
     fr: {
         welcome: 'Bonjour ! Entrez le nom d\'une ville en France :',
@@ -57,7 +77,12 @@ const i18n = {
         route: 'Obtenir l\'itinéraire',
         error: 'Une erreur est survenue. Veuillez réessayer.',
         station_default: 'Station',
-        choose_language: 'Choisissez la langue :'
+        choose_language: 'Choisissez la langue :',
+        filter_open_now: '✅ Ouvert act.',
+        filter_all: '🔄 Toutes stations',
+        country_chosen_FR: '🇫🇷 France sélectionnée. Entrez le nom d\'une ville :',
+        country_chosen_ES: '🇪🇸 Espagne sélectionnée. Entrez le nom d\'une ville :',
+        country_chosen_DE: '🇩🇪 Allemagne sélectionnée. Entrez un code postal (PLZ) ou une ville :'
     }
 };
 
