@@ -3,284 +3,226 @@ const axios = require('axios');
 const { TOKEN } = require('./token');
 const i18n = require('./i18n');
 const config = require('./config');
+const { fuelTypes } = require('./consts');
+
+const { parseFrenchHours } = require('./utils/timeParser');
 
 const bot = new Telegraf(TOKEN);
 bot.use(session());
 
-const SUPPORTED_LANGS = ['ru', 'uk', 'pl', 'fr'];
-
-const mainKeyboard = Markup.keyboard([
-    ['/start', '/help', '/lang']
-]).resize();
-
-const getUserLang = (ctx) => {
-    if (ctx.session && ctx.session.lang) return ctx.session.lang;
-    const tgLang = ctx.from?.language_code;
-    return SUPPORTED_LANGS.includes(tgLang) ? tgLang : 'en';
+const capitalize = (str) => {
+    if (!str) return '';
+    return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
 };
 
-const getTxt = (ctx, key) => {
-    const lang = getUserLang(ctx);
-    return i18n[lang]?.[key] || i18n['en']?.[key] || `[${key}]`;
-};
+const getUserLang = (ctx) => 'ru';
+const getTxt = (ctx, key) => i18n['ru']?.[key] || `[${key}]`;
 
-const fuelTypes = {
-    'fuel_gazole': { label: 'Diesel', frField: 'gazole_prix', deField: 'diesel', esField: 'Precio Gasoleo A' },
-    'fuel_e10': { label: 'E10', frField: 'e10_prix', deField: 'e10', esField: 'Precio Gasolina 95 E10' },
-    'fuel_sp98': { label: 'SP98', frField: 'sp98_prix', deField: 'e5', esField: 'Precio Gasolina 98 E5' },
-    'fuel_gplc': { label: 'GPL', frField: 'gplc_prix', deField: 'gashigh', esField: 'Precio Gases Licuados del Petróleo' }
-};
+bot.use(async (ctx, next) => {
+    if (ctx.callbackQuery) {
+        console.log(`=== КЛИК ПО КНОПКЕ === Data: "${ctx.callbackQuery.data}"`);
+    }
+    return next();
+});
 
-const getLangKeyboard = () => {
-    return Markup.inlineKeyboard([
-        [Markup.button.callback('🇷🇺 Русский', 'set_lang_ru'), Markup.button.callback('🇺🇦 Українська', 'set_lang_uk')],
-        [Markup.button.callback('🇵🇱 Polski', 'set_lang_pl'), Markup.button.callback('🇫🇷 Français', 'set_lang_fr')],
-        [Markup.button.callback('🇬🇧 English', 'set_lang_en')]
-    ]);
+const sendMainMenu = async (ctx) => {
+    ctx.session = ctx.session || {};
+    ctx.session.location = null;
+    await ctx.reply(getTxt(ctx, 'enter_city'), Markup.keyboard([
+        ['/start', '/help']
+    ]).resize());
 };
-
-const getCountryKeyboard = () => {
-    return Markup.inlineKeyboard([
-        [Markup.button.callback('🇫🇷 France', 'set_country_FR'), Markup.button.callback('🇪🇸 España', 'set_country_ES')],
-        [Markup.button.callback('🇩🇪 Deutschland', 'set_country_DE')]
-    ]);
-};
-
-// --- КОМАНДЫ ---
 
 bot.start(async (ctx) => {
     ctx.session = ctx.session || {};
-    const tgLang = ctx.from?.language_code;
-
-    if (!SUPPORTED_LANGS.includes(tgLang)) {
-        ctx.session.lang = 'en';
-        await ctx.reply('👋 Hello! Please select your language:', mainKeyboard);
-        return ctx.reply('Language:', getLangKeyboard());
-    }
-
-    ctx.session.lang = tgLang;
-    await ctx.reply(getTxt(ctx, 'welcome'), mainKeyboard);
-    return ctx.reply('Выберите страну / Select country:', getCountryKeyboard());
+    ctx.session.lang = 'ru';
+    ctx.session.country = 'FR';
+    await sendMainMenu(ctx);
 });
 
 bot.help((ctx) => {
-    ctx.replyWithMarkdown(getTxt(ctx, 'help'), mainKeyboard);
+    ctx.replyWithMarkdown(getTxt(ctx, 'help'));
 });
 
-bot.command('lang', (ctx) => {
-    ctx.reply(getTxt(ctx, 'choose_language'), getLangKeyboard());
+bot.action('main_menu', async (ctx) => {
+    await ctx.answerCbQuery().catch(() => { });
+    await ctx.deleteMessage().catch(() => { });
+    await sendMainMenu(ctx);
 });
-
-bot.action(/set_lang_(.+)/, async (ctx) => {
-    await ctx.answerCbQuery();
-    ctx.session = ctx.session || {};
-    ctx.session.lang = ctx.match[1];
-
-    await ctx.reply('Country / Страна:', getCountryKeyboard());
-});
-
-// Обработка выбора страны (Без хардкода, полностью на i18n)
-bot.action(/set_country_(.+)/, async (ctx) => {
-    await ctx.answerCbQuery();
-    ctx.session = ctx.session || {};
-    const selectedCountry = ctx.match[1];
-    ctx.session.country = selectedCountry;
-
-    const translationKey = `country_chosen_${selectedCountry}`;
-    await ctx.editMessageText(getTxt(ctx, translationKey));
-});
-
-// --- ЛОГИКА ВВОДА ГОРОДА ---
 
 bot.on('text', async (ctx) => {
-    const userInput = ctx.message.text.trim().toUpperCase();
-    if (userInput.startsWith('/')) return;
+    const rawInput = ctx.message.text.trim();
+    if (rawInput.startsWith('/')) return;
 
     ctx.session = ctx.session || {};
+    ctx.session.country = 'FR'; // Временно хардкод страны, пока не перешли к выбору
 
-    if (!ctx.session.country) {
-        return ctx.reply('Сначала выберите страну:', getCountryKeyboard());
+    // Регулярное выражение для проверки координат (например: 48.8566, 2.3522)
+    const geoRegex = /^[-+]?([1-8]?\d(\.\d+)?|90(\.0+)?),\s*[-+]?(180(\.0+)?|((1[0-7]\d)|([1-9]?\d))(\.\d+)?)$/;
+
+    if (geoRegex.test(rawInput)) {
+        // ЮЗЕР ВВЕЛ КООРДИНАТЫ
+        const [lat, lon] = rawInput.split(',').map(coord => parseFloat(coord.trim()));
+        ctx.session.userCoords = { lat, lon };
+        ctx.session.location = `${lat.toFixed(4)}, ${lon.toFixed(4)}`; // Для вывода юзеру
+    } else {
+        // ЮЗЕР ВВЕЛ ГОРОД ТЕКСТОМ
+        ctx.session.userCoords = null; // Сбрасываем GPS, так как ищем по городу
+        ctx.session.location = capitalize(rawInput);
     }
 
-    ctx.session.location = userInput;
-
-    const text = getTxt(ctx, 'select_fuel').replace('{city}', userInput);
+    const text = getTxt(ctx, 'select_fuel').replace('{city}', ctx.session.location);
     await ctx.reply(text, Markup.inlineKeyboard([
         [Markup.button.callback('⛽️ Diesel', 'fuel_gazole'), Markup.button.callback('🔹 E10', 'fuel_e10')],
-        [Markup.button.callback('🔹 SP98', 'fuel_sp98'), Markup.button.callback('💨 GPL', 'fuel_gplc')]
+        [Markup.button.callback('🔹 SP98', 'fuel_sp98'), Markup.button.callback('💨 GPL', 'fuel_gplc')],
+        [Markup.button.callback(getTxt(ctx, 'main_menu'), 'main_menu')]
     ]));
 });
 
-// --- ПРОМЕЖУТОЧНЫЙ ШАГ: ВЫБОР ФИЛЬТРА ---
-bot.action(/fuel_(.+)/, async (ctx) => {
+bot.action(/^fuel_(.+)$/, async (ctx) => {
     try {
-        // Безопасно тушим часики анимации на кнопке
         await ctx.answerCbQuery().catch(() => { });
-
         const fuelKey = ctx.match[0];
         const fuel = fuelTypes[fuelKey];
         const location = ctx.session?.location;
+        const hasCoords = !!ctx.session?.userCoords;
 
-        if (!location) return ctx.reply(getTxt(ctx, 'welcome'));
+        if (!location) return ctx.reply('Ошибка: введите город заново.');
 
-        const menuText = `📍 ${location} | ⛽️ ${fuel.label}\n\n${getTxt(ctx, 'choose_language') === 'Wybierz język:' ? 'Wybierz filtr:' : 'Выберите фильтр:'}`;
+        // ТЕПЕРЬ СТРОГО ИЗ i18n
+        const menuText = getTxt(ctx, 'filter_menu_title')
+            .replace('{city}', location)
+            .replace('{fuel}', fuel.label);
 
-        // Защита от дубликатов: если текст совпадает, Telegram не выдаст ошибку, catch её поймает
-        await ctx.editMessageText(menuText, Markup.inlineKeyboard([
-            [
-                Markup.button.callback(getTxt(ctx, 'filter_all'), `filter_all_${fuelKey}`),
-                Markup.button.callback(getTxt(ctx, 'filter_open_now'), `filter_open_${fuelKey}`)
-            ]
-        ])).catch(err => {
-            if (!err.message.includes('message is not modified')) {
-                console.error('Ошибка изменения сообщения:', err.message);
-            }
-        });
+        let keyboard = [];
+
+        if (!hasCoords) {
+            // Если только город: сортировка по цене по умолчанию
+            keyboard = [
+                [
+                    Markup.button.callback(getTxt(ctx, 'filter_all'), `filter_all_price_${fuelKey}`),
+                    Markup.button.callback(getTxt(ctx, 'filter_open_now'), `filter_open_price_${fuelKey}`)
+                ]
+            ];
+        } else {
+            // Если есть GPS: продвинутое меню (Фильтр + Сортировка)
+            keyboard = [
+                [
+                    Markup.button.callback(getTxt(ctx, 'filter_all_price'), `filter_all_price_${fuelKey}`),
+                    Markup.button.callback(getTxt(ctx, 'filter_all_dist'), `filter_all_dist_${fuelKey}`)
+                ],
+                [
+                    Markup.button.callback(getTxt(ctx, 'filter_open_price'), `filter_open_price_${fuelKey}`),
+                    Markup.button.callback(getTxt(ctx, 'filter_open_dist'), `filter_open_dist_${fuelKey}`)
+                ]
+            ];
+        }
+
+        // Добавляем кнопку главного меню в конец
+        keyboard.push([Markup.button.callback(getTxt(ctx, 'main_menu'), 'main_menu')]);
+
+        await ctx.editMessageText(menuText, Markup.inlineKeyboard(keyboard)).catch(() => { });
     } catch (e) {
-        console.error('Ошибка в экшене выбора топлива:', e.message);
+        console.error('Ошибка в меню фильтра:', e.message);
     }
 });
 
-// --- ПОИСК, ФИЛЬТРАЦИЯ И ОТВЕТ ---
+// --- ПОИСК И РЕЗУЛЬТАТ ---
 
-bot.action(/filter_(all|open)_(fuel_.+)/, async (ctx) => {
+// --- ПОИСК И РЕЗУЛЬТАТ ---
+bot.action(/^filter_(all|open)_(price|dist)_(fuel_.+)$/, async (ctx) => {
     try {
-        // Гасим часики анимации. Если запрос устарел — просто ловим ошибку и идем дальше
         await ctx.answerCbQuery().catch(() => { });
-
-        const filterType = ctx.match[1];
-        const fuelKey = ctx.match[2];
+        const filterType = ctx.match[1]; // all или open
+        const sortType = ctx.match[2];   // price или dist
+        const fuelKey = ctx.match[3];    // fuel_gazole и т.д.
         const fuel = fuelTypes[fuelKey];
 
         ctx.session = ctx.session || {};
         const location = ctx.session.location;
-        const country = ctx.session.country;
 
-        if (!location || !country) return ctx.reply(getTxt(ctx, 'welcome'));
+        if (!location) return ctx.reply('Ошибка: город не найден в сессии.');
 
-        // Меняем текст на "Поиск...", игнорируя ошибку дубликата
         await ctx.editMessageText(getTxt(ctx, 'searching').replace('{fuel}', fuel.label).replace('{city}', location))
             .catch(() => { });
 
         let records = [];
+        const apiLocation = location.toUpperCase();
 
+        const response = await axios.get(config.FRANCE_API_URL, {
+            params: {
+                where: `ville LIKE "${apiLocation}*" AND ${fuel.frField} > 0`,
+                order_by: `${fuel.frField} ASC`,
+                limit: 30
+            }
+        });
 
-        // 1. ЛОГИКА ФРАНЦИИ
-        if (country === 'FR') {
-            const response = await axios.get(config.FRANCE_API_URL, {
-                params: {
-                    where: `ville LIKE "${location}*" AND ${fuel.frField} > 0`,
-                    order_by: `${fuel.frField} ASC`,
-                    limit: 30
-                }
+        if (response.data.results) {
+            // ВЫВОДИМ В КОНСОЛЬ ВСЕ ПОЛЯ ПЕРВОЙ ЗАПРАВКИ ДЛЯ ДЕБАГА РАСПИСАНИЯ
+            if (response.data.results[0]) {
+                console.log('=== СТРУКТУРА ПЕРВОЙ ЗАПРАВКИ ===', JSON.stringify(response.data.results[0], null, 2));
+            }
+
+            const seenAddresses = new Set();
+
+            // МАППИНГ С СОХРАНЕНИЕМ НОВЫХ ПОЛЕЙ РАСПИСАНИЯ
+            records = response.data.results.map(station => ({
+                price: station[fuel.frField],
+                name: station.nom || '---',
+                address: station.adresse || '---',
+                city: location,
+                horaires: station.horaires,
+                horaires_automate_24_24: station.horaires_automate_24_24,
+                horaires_jour: station.horaires_jour
+            })).filter(station => {
+                const addr = station.address.toLowerCase().trim();
+                if (seenAddresses.has(addr)) return false;
+                seenAddresses.add(addr);
+                return true;
             });
-
-            if (response.data.results) {
-                const seenAddresses = new Set();
-                records = response.data.results.map(station => ({
-                    price: station[fuel.frField],
-                    name: station.nom || '---',
-                    address: station.adresse || '---',
-                    city: location,
-                    horaires: station.horaires
-                })).filter(station => {
-                    const addr = station.address.toLowerCase().trim();
-                    if (seenAddresses.has(addr)) return false;
-                    seenAddresses.add(addr);
-                    return true;
-                });
-            }
-        }
-        // 2. ЛОГИКА ИСПАНИИ
-        else if (country === 'ES') {
-            const response = await axios.get(config.SPAIN_API_URL);
-            const allStations = response.data.ListaEESSPrecio;
-
-            if (allStations) {
-                const seenAddresses = new Set();
-
-                records = allStations
-                    .filter(station => {
-                        const cityMatch = station['Municipio']?.toUpperCase().includes(location);
-                        const rawPrice = station[fuel.esField];
-                        if (!rawPrice) return false;
-
-                        const priceNum = parseFloat(rawPrice.replace(',', '.'));
-                        return cityMatch && priceNum > 0;
-                    })
-                    .map(station => {
-                        const priceNum = parseFloat(station[fuel.esField].replace(',', '.'));
-                        return {
-                            price: priceNum,
-                            name: station['Rótulo'] || '---',
-                            address: station['Dirección'] || '---',
-                            city: station['Municipio'],
-                            horario: station['Horario']
-                        };
-                    })
-                    .sort((a, b) => a.price - b.price)
-                    .filter(station => {
-                        const addr = station.address.toLowerCase().trim();
-                        if (seenAddresses.has(addr)) return false;
-                        seenAddresses.add(addr);
-                        return true;
-                    });
-            }
-        }
-        // 3. ЛОГИКА ГЕРМАНИИ
-        else if (country === 'DE') {
-            let lat = 52.5200, lng = 13.4050;
-
-            const response = await axios.get(config.GERMANY_API_URL, {
-                params: {
-                    lat: lat,
-                    lng: lng,
-                    rad: 10,
-                    type: fuel.deField === 'diesel' ? 'diesel' : 'e10',
-                    apikey: config.GERMANY_API_KEY,
-                    sort: 'price'
-                }
-            });
-
-            if (response.data.stations) {
-                records = response.data.stations.map(station => ({
-                    price: station.price,
-                    name: station.name || '---',
-                    address: `${station.street} ${station.houseNumber || ''}, ${station.postCode} ${station.place}`,
-                    city: station.place
-                }));
-            }
         }
 
-        // --- ПРИМЕНЕНИЕ ФИЛЬТРА «ОТКРЫТО СЕЙЧАС» ---
+        // --- Использование утилиты для фильтра «ОТКРЫТО СЕЙЧАС» ---
         if (filterType === 'open') {
-            await ctx.reply('⏳ Заглушка фильтра: На следующем шаге мы научим бота читать графики АЗС.');
+            records = records.filter(station => {
+                const hoursStatus = parseFrenchHours(station, 'ru');
+                return hoursStatus.includes('24/7');
+            });
         }
 
-        // --- ВЫВОД РЕЗУЛЬТАТОВ ---
         if (!records || records.length === 0) {
-            return ctx.reply(getTxt(ctx, 'not_found').replace('{fuel}', fuel.label).replace('{city}', location));
+            const notFoundText = filterType === 'open'
+                ? `В городе ${location} сейчас нет открытых АЗС с топливом ${fuel.label}.`
+                : getTxt(ctx, 'not_found').replace('{fuel}', fuel.label).replace('{city}', location);
+
+            return ctx.reply(notFoundText, Markup.inlineKeyboard([
+                [Markup.button.callback(getTxt(ctx, 'search_again'), 'main_menu')]
+            ]));
         }
 
         records = records.slice(0, config.STATIONS_LIMIT);
-
         let report = getTxt(ctx, 'top_title').replace('{fuel}', fuel.label).replace('{city}', location) + '\n\n';
 
         records.forEach((station, index) => {
             const mapUrl = `http://googleusercontent.com/maps.google.com/?q=${encodeURIComponent(station.address + ' ' + station.city)}`;
             const icon = index === 0 ? '🥇' : '📍';
-            report += `${icon} *${station.price}€* — ${station.name}\n🏠 ${station.address}\n🚗 [${getTxt(ctx, 'route')}](${mapUrl})\n\n`;
+
+            const timeInfo = parseFrenchHours(station, 'ru');
+
+            report += `${icon} *${station.price}€* — ${station.name}\n🏠 ${station.address}\n${timeInfo}\n🚗 [${getTxt(ctx, 'route')}](${mapUrl})\n\n`;
         });
 
-        await ctx.replyWithMarkdown(report);
+        await ctx.replyWithMarkdown(report, Markup.inlineKeyboard([
+            [Markup.button.callback(getTxt(ctx, 'search_again'), 'main_menu')]
+        ]));
 
     } catch (error) {
-        console.error('Ошибка внутри обработчика фильтра:', error.message);
+        console.error('Error in search', error.message);
         ctx.reply(getTxt(ctx, 'error'));
     }
 });
 
-bot.launch().then(() => console.log('✅ Бот запущен с поддержкой FR, ES и DE (и шагом фильтрации)!'));
+bot.launch().then(() => console.log('🚀 Бот запущен!'));
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
