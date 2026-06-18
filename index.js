@@ -5,7 +5,8 @@ const i18n = require('./i18n');
 const config = require('./config');
 const { fuelTypes } = require('./consts');
 
-const { parseFrenchHours } = require('./utils/timeParser');
+// Подключаем утилиту для расчета расстояния по формуле гаверсинусов
+const { getDistance } = require('./utils/geo');
 
 const bot = new Telegraf(TOKEN);
 bot.use(session());
@@ -15,9 +16,9 @@ const capitalize = (str) => {
     return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
 };
 
-const getUserLang = (ctx) => 'ru';
 const getTxt = (ctx, key) => i18n['ru']?.[key] || `[${key}]`;
 
+// Логирование кликов для отладки в консоли
 bot.use(async (ctx, next) => {
     if (ctx.callbackQuery) {
         console.log(`=== КЛИК ПО КНОПКЕ === Data: "${ctx.callbackQuery.data}"`);
@@ -28,6 +29,7 @@ bot.use(async (ctx, next) => {
 const sendMainMenu = async (ctx) => {
     ctx.session = ctx.session || {};
     ctx.session.location = null;
+    ctx.session.userCoords = null; // Сбрасываем старый GPS при выходе в главное меню
     await ctx.reply(getTxt(ctx, 'enter_city'), Markup.keyboard([
         ['/start', '/help']
     ]).resize());
@@ -50,12 +52,13 @@ bot.action('main_menu', async (ctx) => {
     await sendMainMenu(ctx);
 });
 
+// Обработка ввода (Распознаем: Город текстом или GPS-координаты)
 bot.on('text', async (ctx) => {
     const rawInput = ctx.message.text.trim();
     if (rawInput.startsWith('/')) return;
 
     ctx.session = ctx.session || {};
-    ctx.session.country = 'FR'; // Временно хардкод страны, пока не перешли к выбору
+    ctx.session.country = 'FR';
 
     // Регулярное выражение для проверки координат (например: 48.8566, 2.3522)
     const geoRegex = /^[-+]?([1-8]?\d(\.\d+)?|90(\.0+)?),\s*[-+]?(180(\.0+)?|((1[0-7]\d)|([1-9]?\d))(\.\d+)?)$/;
@@ -64,10 +67,10 @@ bot.on('text', async (ctx) => {
         // ЮЗЕР ВВЕЛ КООРДИНАТЫ
         const [lat, lon] = rawInput.split(',').map(coord => parseFloat(coord.trim()));
         ctx.session.userCoords = { lat, lon };
-        ctx.session.location = `${lat.toFixed(4)}, ${lon.toFixed(4)}`; // Для вывода юзеру
+        ctx.session.location = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
     } else {
         // ЮЗЕР ВВЕЛ ГОРОД ТЕКСТОМ
-        ctx.session.userCoords = null; // Сбрасываем GPS, так как ищем по городу
+        ctx.session.userCoords = null;
         ctx.session.location = capitalize(rawInput);
     }
 
@@ -79,17 +82,17 @@ bot.on('text', async (ctx) => {
     ]));
 });
 
+// Меню выбора фильтров и сортировки
 bot.action(/^fuel_(.+)$/, async (ctx) => {
     try {
         await ctx.answerCbQuery().catch(() => { });
-        const fuelKey = ctx.match[0];
+        const fuelKey = ctx.match[0]; // Напр. fuel_gazole
         const fuel = fuelTypes[fuelKey];
         const location = ctx.session?.location;
         const hasCoords = !!ctx.session?.userCoords;
 
         if (!location) return ctx.reply('Ошибка: введите город заново.');
 
-        // ТЕПЕРЬ СТРОГО ИЗ i18n
         const menuText = getTxt(ctx, 'filter_menu_title')
             .replace('{city}', location)
             .replace('{fuel}', fuel.label);
@@ -97,7 +100,7 @@ bot.action(/^fuel_(.+)$/, async (ctx) => {
         let keyboard = [];
 
         if (!hasCoords) {
-            // Если только город: сортировка по цене по умолчанию
+            // Если введен только город — показываем стандартные кнопки (Все / Открытые)
             keyboard = [
                 [
                     Markup.button.callback(getTxt(ctx, 'filter_all'), `filter_all_price_${fuelKey}`),
@@ -105,20 +108,15 @@ bot.action(/^fuel_(.+)$/, async (ctx) => {
                 ]
             ];
         } else {
-            // Если есть GPS: продвинутое меню (Фильтр + Сортировка)
+            // Если есть координаты — даем полноценный мультиязычный выбор сортировки
             keyboard = [
                 [
                     Markup.button.callback(getTxt(ctx, 'filter_all_price'), `filter_all_price_${fuelKey}`),
                     Markup.button.callback(getTxt(ctx, 'filter_all_dist'), `filter_all_dist_${fuelKey}`)
-                ],
-                [
-                    Markup.button.callback(getTxt(ctx, 'filter_open_price'), `filter_open_price_${fuelKey}`),
-                    Markup.button.callback(getTxt(ctx, 'filter_open_dist'), `filter_open_dist_${fuelKey}`)
                 ]
             ];
         }
 
-        // Добавляем кнопку главного меню в конец
         keyboard.push([Markup.button.callback(getTxt(ctx, 'main_menu'), 'main_menu')]);
 
         await ctx.editMessageText(menuText, Markup.inlineKeyboard(keyboard)).catch(() => { });
@@ -128,88 +126,76 @@ bot.action(/^fuel_(.+)$/, async (ctx) => {
 });
 
 // --- ПОИСК И РЕЗУЛЬТАТ ---
-
-// --- ПОИСК И РЕЗУЛЬТАТ ---
 bot.action(/^filter_(all|open)_(price|dist)_(fuel_.+)$/, async (ctx) => {
     try {
         await ctx.answerCbQuery().catch(() => { });
+
         const filterType = ctx.match[1]; // all или open
         const sortType = ctx.match[2];   // price или dist
-        const fuelKey = ctx.match[3];    // fuel_gazole и т.д.
+        const fuelKey = ctx.match[3];    // fuel_...
         const fuel = fuelTypes[fuelKey];
+        const location = ctx.session?.location;
 
-        ctx.session = ctx.session || {};
-        const location = ctx.session.location;
+        if (!location) return ctx.reply('Ошибка: локация не найдена.');
+        if (!ctx.session?.userCoords) return ctx.reply('Ошибка: этот тест только для КООРДИНАТ!');
 
-        if (!location) return ctx.reply('Ошибка: город не найден в сессии.');
+        await ctx.editMessageText(`🔍 Ищу топливо ${fuel.label}...`).catch(() => { });
 
-        await ctx.editMessageText(getTxt(ctx, 'searching').replace('{fuel}', fuel.label).replace('{city}', location))
-            .catch(() => { });
+        const { lat, lon } = ctx.session.userCoords;
 
-        let records = [];
-        const apiLocation = location.toUpperCase();
-
+        // Делаем гео-запрос к API Франции (радиус 30км, сортировка по цене по умолчанию)
         const response = await axios.get(config.FRANCE_API_URL, {
             params: {
-                where: `ville LIKE "${apiLocation}*" AND ${fuel.frField} > 0`,
+                where: `within_distance(geom, geom'POINT(${lon} ${lat})', 30km) AND ${fuel.frField} > 0`,
                 order_by: `${fuel.frField} ASC`,
-                limit: 30
+                limit: 30 // Берем с запасом, чтобы было из чего выбрать ближайшие
             }
         });
 
-        if (response.data.results) {
-            // ВЫВОДИМ В КОНСОЛЬ ВСЕ ПОЛЯ ПЕРВОЙ ЗАПРАВКИ ДЛЯ ДЕБАГА РАСПИСАНИЯ
-            if (response.data.results[0]) {
-                console.log('=== СТРУКТУРА ПЕРВОЙ ЗАПРАВКИ ===', JSON.stringify(response.data.results[0], null, 2));
+        if (!response.data?.results || response.data.results.length === 0) {
+            return ctx.reply('API вернул 0 заправок в этом радиусе.');
+        }
+
+        const seenAddresses = new Set();
+
+        // 1. Маппим результаты и высчитываем реальное расстояние в километрах до каждой АЗС
+        let records = response.data.results.map(station => {
+            let distance = Infinity;
+            if (station.geom) {
+                distance = getDistance(lat, lon, station.geom.lat, station.geom.lon);
             }
-
-            const seenAddresses = new Set();
-
-            // МАППИНГ С СОХРАНЕНИЕМ НОВЫХ ПОЛЕЙ РАСПИСАНИЯ
-            records = response.data.results.map(station => ({
+            return {
                 price: station[fuel.frField],
                 name: station.nom || '---',
                 address: station.adresse || '---',
-                city: location,
-                horaires: station.horaires,
-                horaires_automate_24_24: station.horaires_automate_24_24,
-                horaires_jour: station.horaires_jour
-            })).filter(station => {
-                const addr = station.address.toLowerCase().trim();
-                if (seenAddresses.has(addr)) return false;
-                seenAddresses.add(addr);
-                return true;
-            });
+                distance: distance
+            };
+        }).filter(station => {
+            const addr = station.address.toLowerCase().trim();
+            if (seenAddresses.has(addr)) return false;
+            seenAddresses.add(addr);
+            return true;
+        });
+
+        // 2. Если юзер выбрал сортировку по дистанции — перестраиваем массив по км
+        if (sortType === 'dist') {
+            records.sort((a, b) => a.distance - b.distance);
         }
 
-        // --- Использование утилиты для фильтра «ОТКРЫТО СЕЙЧАС» ---
-        if (filterType === 'open') {
-            records = records.filter(station => {
-                const hoursStatus = parseFrenchHours(station, 'ru');
-                return hoursStatus.includes('24/7');
-            });
-        }
-
-        if (!records || records.length === 0) {
-            const notFoundText = filterType === 'open'
-                ? `В городе ${location} сейчас нет открытых АЗС с топливом ${fuel.label}.`
-                : getTxt(ctx, 'not_found').replace('{fuel}', fuel.label).replace('{city}', location);
-
-            return ctx.reply(notFoundText, Markup.inlineKeyboard([
-                [Markup.button.callback(getTxt(ctx, 'search_again'), 'main_menu')]
-            ]));
-        }
-
+        // Обрезаем массив до лимита из конфига
         records = records.slice(0, config.STATIONS_LIMIT);
-        let report = getTxt(ctx, 'top_title').replace('{fuel}', fuel.label).replace('{city}', location) + '\n\n';
+
+        // Формируем заголовок отчета в зависимости от типа сортировки
+        let report = sortType === 'dist'
+            ? `🚗 *Ближайшие АЗС рядом с вами:* \n\n`
+            : `💰 *Самые дешевые АЗС рядом с вами:* \n\n`;
 
         records.forEach((station, index) => {
-            const mapUrl = `http://googleusercontent.com/maps.google.com/?q=${encodeURIComponent(station.address + ' ' + station.city)}`;
             const icon = index === 0 ? '🥇' : '📍';
+            const distInfo = station.distance !== Infinity ? ` 🚗 *(${station.distance} км)*` : '';
+            const mapUrl = `http://googleusercontent.com/maps.google.com/?q=${encodeURIComponent(station.address)}`;
 
-            const timeInfo = parseFrenchHours(station, 'ru');
-
-            report += `${icon} *${station.price}€* — ${station.name}\n🏠 ${station.address}\n${timeInfo}\n🚗 [${getTxt(ctx, 'route')}](${mapUrl})\n\n`;
+            report += `${icon} *${station.price}€*${distInfo} — ${station.name}\n🏠 ${station.address}\n🚗 [${getTxt(ctx, 'route')}](${mapUrl})\n\n`;
         });
 
         await ctx.replyWithMarkdown(report, Markup.inlineKeyboard([
@@ -217,8 +203,8 @@ bot.action(/^filter_(all|open)_(price|dist)_(fuel_.+)$/, async (ctx) => {
         ]));
 
     } catch (error) {
-        console.error('Error in search', error.message);
-        ctx.reply(getTxt(ctx, 'error'));
+        console.error('💥 Ошибка в гео-поиске:', error.message);
+        ctx.reply('Произошла ошибка при запросе к API. Проверьте консоль.');
     }
 });
 
