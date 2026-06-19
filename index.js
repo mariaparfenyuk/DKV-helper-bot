@@ -3,13 +3,17 @@ const axios = require('axios');
 const { TOKEN } = require('./token');
 const i18n = require('./i18n');
 const config = require('./config');
-const { fuelTypes } = require('./consts');
+const { fuelTypes, geoRegex } = require('./consts');
 
-// Подключаем утилиту для расчета расстояния по формуле гаверсинусов
 const { getDistance } = require('./utils/geo');
+const { parseFrenchHours } = require('./utils/timeParser');
+const { getMapUrl } = require('./utils/maps');
+const { clickLogger } = require('./middlewares/logger');
+const { handleUnexpectedError } = require('./utils/errors');
 
 const bot = new Telegraf(TOKEN);
 bot.use(session());
+bot.use(clickLogger);
 
 const capitalize = (str) => {
     if (!str) return '';
@@ -18,18 +22,10 @@ const capitalize = (str) => {
 
 const getTxt = (ctx, key) => i18n['ru']?.[key] || `[${key}]`;
 
-// Логирование кликов для отладки в консоли
-bot.use(async (ctx, next) => {
-    if (ctx.callbackQuery) {
-        console.log(`=== КЛИК ПО КНОПКЕ === Data: "${ctx.callbackQuery.data}"`);
-    }
-    return next();
-});
-
 const sendMainMenu = async (ctx) => {
     ctx.session = ctx.session || {};
     ctx.session.location = null;
-    ctx.session.userCoords = null; // Сбрасываем старый GPS при выходе в главное меню
+    ctx.session.userCoords = null;
     await ctx.reply(getTxt(ctx, 'enter_city'), Markup.keyboard([
         ['/start', '/help']
     ]).resize());
@@ -52,7 +48,6 @@ bot.action('main_menu', async (ctx) => {
     await sendMainMenu(ctx);
 });
 
-// Обработка ввода (Распознаем: Город текстом или GPS-координаты)
 bot.on('text', async (ctx) => {
     const rawInput = ctx.message.text.trim();
     if (rawInput.startsWith('/')) return;
@@ -60,16 +55,18 @@ bot.on('text', async (ctx) => {
     ctx.session = ctx.session || {};
     ctx.session.country = 'FR';
 
-    // Регулярное выражение для проверки координат (например: 48.8566, 2.3522)
-    const geoRegex = /^[-+]?([1-8]?\d(\.\d+)?|90(\.0+)?),\s*[-+]?(180(\.0+)?|((1[0-7]\d)|([1-9]?\d))(\.\d+)?)$/;
+    const looksLikeCoords = /[\d.,]/g.test(rawInput) && (rawInput.includes(',') || rawInput.includes('.'));
 
     if (geoRegex.test(rawInput)) {
-        // ЮЗЕР ВВЕЛ КООРДИНАТЫ
         const [lat, lon] = rawInput.split(',').map(coord => parseFloat(coord.trim()));
         ctx.session.userCoords = { lat, lon };
         ctx.session.location = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+    } else if (looksLikeCoords) {
+        return ctx.replyWithMarkdown(getTxt(ctx, 'error_coords_format'));
     } else {
-        // ЮЗЕР ВВЕЛ ГОРОД ТЕКСТОМ
+        if (rawInput.length < 2 || rawInput.length > 50) {
+            return ctx.replyWithMarkdown(getTxt(ctx, 'error_city_length'));
+        }
         ctx.session.userCoords = null;
         ctx.session.location = capitalize(rawInput);
     }
@@ -82,16 +79,19 @@ bot.on('text', async (ctx) => {
     ]));
 });
 
-// Меню выбора фильтров и сортировки
+bot.on(['photo', 'video', 'sticker', 'voice', 'audio', 'document', 'animation', 'location'], async (ctx) => {
+    await ctx.replyWithMarkdown(getTxt(ctx, 'error_media_not_supported'));
+});
+
 bot.action(/^fuel_(.+)$/, async (ctx) => {
     try {
         await ctx.answerCbQuery().catch(() => { });
-        const fuelKey = ctx.match[0]; // Напр. fuel_gazole
+        const fuelKey = ctx.match[0];
         const fuel = fuelTypes[fuelKey];
         const location = ctx.session?.location;
         const hasCoords = !!ctx.session?.userCoords;
 
-        if (!location) return ctx.reply('Ошибка: введите город заново.');
+        if (!location) return ctx.replyWithMarkdown(getTxt(ctx, 'error_session_expired'));
 
         const menuText = getTxt(ctx, 'filter_menu_title')
             .replace('{city}', location)
@@ -100,7 +100,6 @@ bot.action(/^fuel_(.+)$/, async (ctx) => {
         let keyboard = [];
 
         if (!hasCoords) {
-            // Если введен только город — показываем стандартные кнопки (Все / Открытые)
             keyboard = [
                 [
                     Markup.button.callback(getTxt(ctx, 'filter_all'), `filter_all_price_${fuelKey}`),
@@ -108,11 +107,14 @@ bot.action(/^fuel_(.+)$/, async (ctx) => {
                 ]
             ];
         } else {
-            // Если есть координаты — даем полноценный мультиязычный выбор сортировки
             keyboard = [
                 [
                     Markup.button.callback(getTxt(ctx, 'filter_all_price'), `filter_all_price_${fuelKey}`),
                     Markup.button.callback(getTxt(ctx, 'filter_all_dist'), `filter_all_dist_${fuelKey}`)
+                ],
+                [
+                    Markup.button.callback(getTxt(ctx, 'filter_open_price'), `filter_open_price_${fuelKey}`),
+                    Markup.button.callback(getTxt(ctx, 'filter_open_dist'), `filter_open_dist_${fuelKey}`)
                 ]
             ];
         }
@@ -125,50 +127,70 @@ bot.action(/^fuel_(.+)$/, async (ctx) => {
     }
 });
 
-// --- ПОИСК И РЕЗУЛЬТАТ ---
 bot.action(/^filter_(all|open)_(price|dist)_(fuel_.+)$/, async (ctx) => {
     try {
         await ctx.answerCbQuery().catch(() => { });
 
-        const filterType = ctx.match[1]; // all или open
-        const sortType = ctx.match[2];   // price или dist
-        const fuelKey = ctx.match[3];    // fuel_...
+        const filterType = ctx.match[1];
+        const sortType = ctx.match[2];
+        const fuelKey = ctx.match[3];
         const fuel = fuelTypes[fuelKey];
         const location = ctx.session?.location;
 
-        if (!location) return ctx.reply('Ошибка: локация не найдена.');
-        if (!ctx.session?.userCoords) return ctx.reply('Ошибка: этот тест только для КООРДИНАТ!');
+        if (!location) return ctx.replyWithMarkdown(getTxt(ctx, 'error_session_expired'));
 
-        await ctx.editMessageText(`🔍 Ищу топливо ${fuel.label}...`).catch(() => { });
+        const loadingText = getTxt(ctx, 'searching_fuel').replace('{fuel}', fuel.label);
+        await ctx.editMessageText(loadingText).catch(() => { });
 
-        const { lat, lon } = ctx.session.userCoords;
+        let response;
 
-        // Делаем гео-запрос к API Франции (радиус 30км, сортировка по цене по умолчанию)
-        const response = await axios.get(config.FRANCE_API_URL, {
-            params: {
-                where: `within_distance(geom, geom'POINT(${lon} ${lat})', 30km) AND ${fuel.frField} > 0`,
-                order_by: `${fuel.frField} ASC`,
-                limit: 30 // Берем с запасом, чтобы было из чего выбрать ближайшие
-            }
-        });
+        if (ctx.session?.userCoords) {
+            const { lat, lon } = ctx.session.userCoords;
+            response = await axios.get(config.FRANCE_API_URL, {
+                params: {
+                    where: `within_distance(geom, geom'POINT(${lon} ${lat})', 30km) AND ${fuel.frField} > 0`,
+                    order_by: `${fuel.frField} ASC`,
+                    limit: 40
+                }
+            });
+        } else {
+            const apiLocation = location.toUpperCase();
+            response = await axios.get(config.FRANCE_API_URL, {
+                params: {
+                    where: `ville LIKE "${apiLocation}*" AND ${fuel.frField} > 0`,
+                    order_by: `${fuel.frField} ASC`,
+                    limit: 40
+                }
+            });
+        }
 
         if (!response.data?.results || response.data.results.length === 0) {
-            return ctx.reply('API вернул 0 заправок в этом радиусе.');
+            const errorText = !ctx.session?.userCoords
+                ? getTxt(ctx, 'error_city_not_found').replace('{location}', location)
+                : getTxt(ctx, 'error_coords_not_found').replace('{location}', location).replace('{fuel}', fuel.label);
+
+            return ctx.replyWithMarkdown(errorText, Markup.inlineKeyboard([
+                [Markup.button.callback(getTxt(ctx, 'main_menu'), 'main_menu')]
+            ]));
         }
 
         const seenAddresses = new Set();
 
-        // 1. Маппим результаты и высчитываем реальное расстояние в километрах до каждой АЗС
         let records = response.data.results.map(station => {
             let distance = Infinity;
-            if (station.geom) {
-                distance = getDistance(lat, lon, station.geom.lat, station.geom.lon);
+            if (ctx.session?.userCoords && station.geom) {
+                distance = getDistance(ctx.session.userCoords.lat, ctx.session.userCoords.lon, station.geom.lat, station.geom.lon);
             }
             return {
                 price: station[fuel.frField],
-                name: station.nom || '---',
+                name: station.nom ? ` — ${station.nom}` : '',
                 address: station.adresse || '---',
-                distance: distance
+                city: station.ville || location,
+                distance: distance,
+                geom: station.geom,
+                horaires: station.horaires,
+                horaires_automate_24_24: station.horaires_automate_24_24,
+                horaires_jour: station.horaires_jour
             };
         }).filter(station => {
             const addr = station.address.toLowerCase().trim();
@@ -177,25 +199,40 @@ bot.action(/^filter_(all|open)_(price|dist)_(fuel_.+)$/, async (ctx) => {
             return true;
         });
 
-        // 2. Если юзер выбрал сортировку по дистанции — перестраиваем массив по км
+        if (filterType === 'open') {
+            records = records.filter(station => {
+                const hoursStatus = parseFrenchHours(station, 'ru');
+                return hoursStatus.includes('24/7') || hoursStatus.toLowerCase().includes('открыто');
+            });
+        }
+
+        if (records.length === 0) {
+            const closedText = getTxt(ctx, 'error_all_stations_closed')
+                .replace('{location}', location)
+                .replace('{fuel}', fuel.label);
+
+            return ctx.replyWithMarkdown(closedText, Markup.inlineKeyboard([
+                [Markup.button.callback(getTxt(ctx, 'main_menu'), 'main_menu')]
+            ]));
+        }
+
         if (sortType === 'dist') {
             records.sort((a, b) => a.distance - b.distance);
         }
 
-        // Обрезаем массив до лимита из конфига
         records = records.slice(0, config.STATIONS_LIMIT);
 
-        // Формируем заголовок отчета в зависимости от типа сортировки
-        let report = sortType === 'dist'
-            ? `🚗 *Ближайшие АЗС рядом с вами:* \n\n`
-            : `💰 *Самые дешевые АЗС рядом с вами:* \n\n`;
+        const reportKey = filterType === 'open' ? 'report_title_open' : 'report_title_all';
+        let report = getTxt(ctx, reportKey).replace('{location}', location);
 
         records.forEach((station, index) => {
             const icon = index === 0 ? '🥇' : '📍';
             const distInfo = station.distance !== Infinity ? ` 🚗 *(${station.distance} км)*` : '';
-            const mapUrl = `http://googleusercontent.com/maps.google.com/?q=${encodeURIComponent(station.address)}`;
+            const timeInfo = parseFrenchHours(station, 'ru');
 
-            report += `${icon} *${station.price}€*${distInfo} — ${station.name}\n🏠 ${station.address}\n🚗 [${getTxt(ctx, 'route')}](${mapUrl})\n\n`;
+            const mapUrl = getMapUrl(ctx, station);
+
+            report += `${icon} *${station.price}€*${distInfo}${station.name}\n🏠 ${station.address}\n🕒 ${timeInfo}\n🚗 [${getTxt(ctx, 'route')}](${mapUrl})\n\n`;
         });
 
         await ctx.replyWithMarkdown(report, Markup.inlineKeyboard([
@@ -203,12 +240,11 @@ bot.action(/^filter_(all|open)_(price|dist)_(fuel_.+)$/, async (ctx) => {
         ]));
 
     } catch (error) {
-        console.error('💥 Ошибка в гео-поиске:', error.message);
-        ctx.reply('Произошла ошибка при запросе к API. Проверьте консоль.');
+        await handleUnexpectedError(ctx, error);
     }
 });
 
-bot.launch().then(() => console.log('🚀 Бот запущен!'));
+bot.launch().then(() => console.log('🚀 Бот успешно запущен!'));
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
