@@ -1,7 +1,6 @@
 const { Telegraf, Markup, session } = require('telegraf');
 const axios = require('axios');
 const { TOKEN } = require('./token');
-const i18n = require('./i18n');
 const config = require('./config');
 const { fuelTypes, geoRegex } = require('./consts');
 
@@ -10,17 +9,12 @@ const { parseFrenchHours } = require('./utils/timeParser');
 const { getMapUrl } = require('./utils/maps');
 const { clickLogger } = require('./middlewares/logger');
 const { handleUnexpectedError } = require('./utils/errors');
+const { capitalize, getTxt } = require('./utils/text');
+const { handleFuelSelection } = require('./handlers/fuelHandler');
 
 const bot = new Telegraf(TOKEN);
 bot.use(session());
 bot.use(clickLogger);
-
-const capitalize = (str) => {
-    if (!str) return '';
-    return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
-};
-
-const getTxt = (ctx, key) => i18n['ru']?.[key] || `[${key}]`;
 
 const sendMainMenu = async (ctx) => {
     ctx.session = ctx.session || {};
@@ -83,50 +77,10 @@ bot.on(['photo', 'video', 'sticker', 'voice', 'audio', 'document', 'animation', 
     await ctx.replyWithMarkdown(getTxt(ctx, 'error_media_not_supported'));
 });
 
-bot.action(/^fuel_(.+)$/, async (ctx) => {
-    try {
-        await ctx.answerCbQuery().catch(() => { });
-        const fuelKey = ctx.match[0];
-        const fuel = fuelTypes[fuelKey];
-        const location = ctx.session?.location;
-        const hasCoords = !!ctx.session?.userCoords;
+// Роутер для выбора типа топлива (логика вынесена в handlers/fuelHandler.js)
+bot.action(/^fuel_(.+)$/, handleFuelSelection);
 
-        if (!location) return ctx.replyWithMarkdown(getTxt(ctx, 'error_session_expired'));
-
-        const menuText = getTxt(ctx, 'filter_menu_title')
-            .replace('{city}', location)
-            .replace('{fuel}', fuel.label);
-
-        let keyboard = [];
-
-        if (!hasCoords) {
-            keyboard = [
-                [
-                    Markup.button.callback(getTxt(ctx, 'filter_all'), `filter_all_price_${fuelKey}`),
-                    Markup.button.callback(getTxt(ctx, 'filter_open_now'), `filter_open_price_${fuelKey}`)
-                ]
-            ];
-        } else {
-            keyboard = [
-                [
-                    Markup.button.callback(getTxt(ctx, 'filter_all_price'), `filter_all_price_${fuelKey}`),
-                    Markup.button.callback(getTxt(ctx, 'filter_all_dist'), `filter_all_dist_${fuelKey}`)
-                ],
-                [
-                    Markup.button.callback(getTxt(ctx, 'filter_open_price'), `filter_open_price_${fuelKey}`),
-                    Markup.button.callback(getTxt(ctx, 'filter_open_dist'), `filter_open_dist_${fuelKey}`)
-                ]
-            ];
-        }
-
-        keyboard.push([Markup.button.callback(getTxt(ctx, 'main_menu'), 'main_menu')]);
-
-        await ctx.editMessageText(menuText, Markup.inlineKeyboard(keyboard)).catch(() => { });
-    } catch (e) {
-        console.error('Ошибка в меню фильтра:', e.message);
-    }
-});
-
+// Роутер для обработки результатов поиска и фильтрации
 bot.action(/^filter_(all|open)_(price|dist)_(fuel_.+)$/, async (ctx) => {
     try {
         await ctx.answerCbQuery().catch(() => { });
