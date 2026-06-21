@@ -10,8 +10,7 @@ const { getTxt } = require('../utils/text');
 const { getSpainStations } = require('../utils/spainApi');
 const { getAustriaStations } = require('../utils/austriaApi');
 const { getItalyStations } = require('../utils/italyApi');
-const { getCzechStations } = require('../utils/czechApi'); // Раскомментировали, чтобы не было ReferenceError
-const { getBelgiumStations } = require('../utils/belgiumApi');
+const { getLuxembourgStations } = require('../utils/luxembourgApi'); // Подключили Люксембург
 
 const handleSearchRequest = async (ctx) => {
   try {
@@ -71,8 +70,7 @@ const handleSearchRequest = async (ctx) => {
         isSpain: false,
         isAustria: false,
         isItaly: false,
-        isCzech: false,
-        isBelgium: false
+        isLuxembourg: false
       }));
 
     } else if (country === 'ES') {
@@ -91,8 +89,7 @@ const handleSearchRequest = async (ctx) => {
         isSpain: true,
         isAustria: false,
         isItaly: false,
-        isCzech: false,
-        isBelgium: false
+        isLuxembourg: false
       }));
 
     } else if (country === 'AT') {
@@ -110,8 +107,7 @@ const handleSearchRequest = async (ctx) => {
         isSpain: false,
         isAustria: true,
         isItaly: false,
-        isCzech: false,
-        isBelgium: false
+        isLuxembourg: false
       }));
 
     } else if (country === 'IT') {
@@ -130,48 +126,26 @@ const handleSearchRequest = async (ctx) => {
         isSpain: false,
         isAustria: false,
         isItaly: true,
-        isCzech: false,
-        isBelgium: false
+        isLuxembourg: false
       }));
 
-    } else if (country === 'CZ') {
-      const { lat, lon } = ctx.session.userCoords || { lat: 50.0755, lon: 14.4378 };
-      const czechStations = await getCzechStations(lat, lon, fuelKey, 15);
+    } else if (country === 'LU') {
+      const { lat, lon } = ctx.session.userCoords || { lat: 49.6116, lon: 6.1319 };
+      const luxStations = await getLuxembourgStations(lat, lon, fuelKey, 30);
 
-      if (czechStations.length === 0) {
+      if (luxStations.length === 0) {
         const errorText = getTxt(ctx, 'error_coords_not_found').replace('{location}', location).replace('{fuel}', fuel.label);
         return ctx.replyWithMarkdown(errorText, Markup.inlineKeyboard([[Markup.button.callback(getTxt(ctx, 'main_menu'), 'main_menu')]]));
       }
 
-      records = czechStations.map(station => ({
+      records = luxStations.map(station => ({
         ...station,
         isOpen: true,
         isGerman: false,
         isSpain: false,
         isAustria: false,
         isItaly: false,
-        isCzech: true,
-        isBelgium: false
-      }));
-
-    } else if (country === 'BE') {
-      const { lat, lon } = ctx.session.userCoords || { lat: 50.8503, lon: 4.3517 };
-      const belgiumStations = await getBelgiumStations(lat, lon, fuelKey, 15);
-
-      if (belgiumStations.length === 0) {
-        const errorText = getTxt(ctx, 'error_coords_not_found').replace('{location}', location).replace('{fuel}', fuel.label);
-        return ctx.replyWithMarkdown(errorText, Markup.inlineKeyboard([[Markup.button.callback(getTxt(ctx, 'main_menu'), 'main_menu')]]));
-      }
-
-      records = belgiumStations.map(station => ({
-        ...station,
-        isOpen: true,
-        isGerman: false,
-        isSpain: false,
-        isAustria: false,
-        isItaly: false,
-        isCzech: false,
-        isBelgium: true
+        isLuxembourg: true
       }));
 
     } else {
@@ -224,8 +198,7 @@ const handleSearchRequest = async (ctx) => {
           isSpain: false,
           isAustria: false,
           isItaly: false,
-          isCzech: false,
-          isBelgium: false // Добавили корректный дефолт для Франции
+          isLuxembourg: false
         };
       });
     }
@@ -235,7 +208,7 @@ const handleSearchRequest = async (ctx) => {
     // ==========================================
 
     records = records.filter(station => {
-      if (station.isAustria || station.isSpain || station.isItaly || station.isCzech || station.isBelgium) return true;
+      if (station.isAustria || station.isSpain || station.isItaly || station.isLuxembourg) return true;
 
       const addr = station.address.toLowerCase().trim();
       if (seenAddresses.has(addr)) return false;
@@ -247,7 +220,7 @@ const handleSearchRequest = async (ctx) => {
       records = records.filter(station => {
         if (station.isGerman || station.isAustria) {
           return station.isOpen === true;
-        } else if (station.isSpain || station.isItaly || station.isCzech || station.isBelgium) {
+        } else if (station.isSpain || station.isItaly || station.isLuxembourg) {
           return true;
         } else {
           const hoursStatus = parseFrenchHours(station, 'ru');
@@ -282,14 +255,14 @@ const handleSearchRequest = async (ctx) => {
       let timeInfo;
       if (station.isGerman || station.isAustria) {
         timeInfo = station.isOpen ? getTxt(ctx, 'time_24_7') : getTxt(ctx, 'time_closed_today');
-      } else if (station.isSpain || station.isItaly || station.isCzech || station.isBelgium) {
+      } else if (station.isSpain || station.isItaly || station.isLuxembourg) {
         timeInfo = station.horario || '---';
       } else {
         timeInfo = parseFrenchHours(station, 'ru');
       }
 
       const mapUrl = getMapUrl(ctx, station);
-      report += `${icon} *${station.price}€*${distInfo}${station.name}\n🏠 ${station.address}\n🕒 ${timeInfo}\n🚗 [${getTxt(ctx, 'route')}](${mapUrl})\n\n`;
+      report += `${icon} *${Number(station.price).toFixed(2)}€*${distInfo}${station.name}\n🏠 ${station.address}\n🕒 ${timeInfo}\n🚗 [${getTxt(ctx, 'route')}](${mapUrl})\n\n`;
     });
 
     await ctx.replyWithMarkdown(report, Markup.inlineKeyboard([

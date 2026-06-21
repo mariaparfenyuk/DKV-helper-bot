@@ -10,9 +10,10 @@ const { capitalize, getTxt } = require('./utils/text');
 const { handleFuelSelection } = require('./handlers/fuelHandler');
 const { handleSearchRequest } = require('./handlers/searchHandler');
 const { getCoordsByText } = require('./utils/geocoder');
+
+// Импорты ТОЛЬКО рабочих и стабильных апдейтеров данных
 const { initSpainUpdater } = require('./utils/spainApi');
 const { initItalyUpdater } = require('./utils/italyApi');
-const { initCzechUpdater } = require('./utils/czechApi');
 
 const bot = new Telegraf(TOKEN);
 bot.use(session());
@@ -24,13 +25,13 @@ const sendMainMenu = async (ctx) => {
     ctx.session.userCoords = null;
     ctx.session.country = null;
 
+    // В меню выбора стран остались только 100% рабочие европейские регионы
     await ctx.reply(
         getTxt(ctx, 'choose_country'),
         Markup.inlineKeyboard([
             [Markup.button.callback('🇫🇷 France', 'set_country_FR'), Markup.button.callback('🇩🇪 Deutschland', 'set_country_DE')],
             [Markup.button.callback('🇪🇸 España', 'set_country_ES'), Markup.button.callback('🇦🇹 Österreich', 'set_country_AT')],
-            [Markup.button.callback('🇮🇹 Italia', 'set_country_IT'), Markup.button.callback('🇨🇿 Česko', 'set_country_CZ')],
-            [Markup.button.callback('🇧🇪 Belgique', 'set_country_BE')] // Исправили синтаксис и убрали дубль Италии
+            [Markup.button.callback('🇮🇹 Italia', 'set_country_IT'), Markup.button.callback('🇱🇺 Luxembourg', 'set_country_LU')]
         ])
     );
 };
@@ -54,7 +55,8 @@ bot.action('main_menu', async (ctx) => {
     await sendMainMenu(ctx);
 });
 
-bot.action(/^set_country_(FR|DE|ES|AT|IT|CZ|BE)$/, async (ctx) => {
+// Валидация регулярного выражения строго под наш актуальный список стабильных стран
+bot.action(/^set_country_(FR|DE|ES|AT|IT|LU)$/, async (ctx) => {
     try {
         await ctx.answerCbQuery().catch(() => { });
         const country = ctx.match[1];
@@ -153,13 +155,12 @@ bot.on(['photo', 'video', 'sticker', 'voice', 'audio', 'document', 'animation'],
 bot.action(/^fuel_(.+)$/, handleFuelSelection);
 bot.action(/^filter_(all|open)_(price|dist)_(fuel_.+)$/, handleSearchRequest);
 
-// Запуск фоновых интеллектуальных апдейтеров
+// Запуск фонового кэширования для стран со стабильными API
 initSpainUpdater();
 initItalyUpdater();
-initCzechUpdater();
 
-// Добавили запуск самого бота (Критично)
-bot.launch().then(() => console.log('🚀 Бот успешно запущен и готов к работе!'));
+// Запуск бота в продакшн
+bot.launch().then(() => console.log('🚀 Бот успешно запущен на стабильном пуле стран!'));
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
