@@ -1,10 +1,12 @@
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 const config = require('../config');
 const { getDistance } = require('./geo');
 
 let spainCache = null;
-let lastFetchTime = 0;
-const CACHE_DURATION = 30 * 60 * 1000; // 30 минут
+const CACHE_FILE = path.join(__dirname, '../spain_cache.json');
+const TIME_4_HOURS = 4 * 60 * 60 * 1000; // Порог свежести кэша на диске
 
 const SPAIN_FUEL_MAPPING = {
   'fuel_gazole': 'Precio Gasoleo A',
@@ -12,42 +14,50 @@ const SPAIN_FUEL_MAPPING = {
   'fuel_sp98': 'Precio Gasolina 98 E5'
 };
 
-// Функция фонового скачивания данных
 const updateSpainCache = async () => {
   try {
-    console.log('--- [Spain API] Фоновое обновление базы заправок Испании... ---');
-    const response = await axios.get(config.SPAIN_API_URL, { timeout: 15000 });
+    // Проверяем локальный файл перед тем как лезть в сеть
+    if (fs.existsSync(CACHE_FILE)) {
+      const stats = fs.statSync(CACHE_FILE);
+      const age = Date.now() - stats.mtimeMs;
+
+      if (age < TIME_4_HOURS) {
+        console.log('--- [Spain API] Найдена свежая локальная копия на диске. Загружаем... ---');
+        const rawData = fs.readFileSync(CACHE_FILE, 'utf8');
+        spainCache = JSON.parse(rawData);
+        console.log(`--- [Spain API] Успешно загружено из файла. Заправок: ${spainCache.length} ---`);
+        return;
+      }
+    }
+
+    // Если файла нет или он старый — качаем из сети
+    console.log('--- [Spain API] Локальный кэш устарел. Скачиваем базу Испании из сети... ---');
+    const response = await axios.get(config.SPAIN_API_URL, { timeout: 25000 });
 
     if (response.data && response.data.ListaEESSPrecio) {
       spainCache = response.data.ListaEESSPrecio;
-      lastFetchTime = Date.now();
-      console.log(`--- [Spain API] База успешно обновлена в фоне. Заправок: ${spainCache.length} ---`);
+
+      // Сохраняем на диск для следующих рестартов
+      fs.writeFileSync(CACHE_FILE, JSON.stringify(spainCache), 'utf8');
+      console.log(`--- [Spain API] База скачана из сети и сохранена на диск. Заправок: ${spainCache.length} ---`);
     }
   } catch (error) {
-    console.error('[Spain API Error] Не удалось обновить кэш в фоне:', error.message);
+    console.error('[Spain API Error] Ошибка кэширования Испании:', error.message);
+    // Фолбэк: если сеть упала, но есть хоть какой-то старый файл — берем его
+    if (!spainCache && fs.existsSync(CACHE_FILE)) {
+      spainCache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+      console.log('--- [Spain API] Сеть недоступна. Загружен аварийный старый кэш с диска. ---');
+    }
   }
 };
 
-/**
- * Инициализация фонового обновления при старте бота
- */
 const initSpainUpdater = () => {
-  // 1. Запускаем первое скачивание немедленно при старте
   updateSpainCache();
-
-  // 2. Ставим таймер на обновление каждые 30 минут
-  setInterval(updateSpainCache, CACHE_DURATION);
+  setInterval(updateSpainCache, TIME_4_HOURS);
 };
 
-/**
- * Ищет ближайшие заправки в Испании (работает мгновенно из кэша)
- */
 const getSpainStations = async (lat, lon, fuelKey, radiusKm = 15) => {
-  // Если вдруг кэш пустой (например, сервер только загрузился, а юзер уже жмет кнопку)
-  if (!spainCache) {
-    await updateSpainCache();
-  }
-
+  if (!spainCache) await updateSpainCache();
   if (!spainCache) return [];
 
   const targetFuelField = SPAIN_FUEL_MAPPING[fuelKey];
@@ -81,7 +91,6 @@ const getSpainStations = async (lat, lon, fuelKey, radiusKm = 15) => {
       });
     }
   }
-
   return stationsWithDistance;
 };
 

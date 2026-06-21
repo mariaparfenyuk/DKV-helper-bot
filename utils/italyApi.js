@@ -1,54 +1,62 @@
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 const { getDistance } = require('./geo');
 
 let italyCache = null;
-let lastFetchTime = 0;
-const CACHE_DURATION = 60 * 60 * 1000; // Обновляем раз в час
+const CACHE_FILE = path.join(__dirname, '../italy_cache.json');
+const TIME_4_HOURS = 4 * 60 * 60 * 1000;
 
-// Ссылки на официальные CSV-данные министерства Италии
-const STATIONS_URL = 'https://www.mise.gov.it/images/stories/carburanti/anagrafica_impianti_attivi.csv';
-const PRICES_URL = 'https://www.mise.gov.it/images/stories/carburanti/prezzo_alle_vendite.csv';
+// Новые актуальные эндпоинты экспорта MIMIT
+const STATIONS_URL = 'https://www.mimit.gov.it/images/exportCSV/anagrafica_impianti_attivi.csv';
+const PRICES_URL = 'https://www.mimit.gov.it/images/exportCSV/prezzo_alle_8.csv';
 
-// Маппинг типов топлива на итальянские названия в их базе
 const ITALY_FUEL_MAPPING = {
-  'fuel_gazole': 'Gasolio',      // Дизель
-  'fuel_e10': 'Benzina',         // Бензин (в Италии E10/E5 часто идет как стандартная Benzina)
-  'fuel_sp98': 'Benzina Speciale', // Премиум бензин / 98-й
-  'fuel_gplc': 'GPL'             // Газ GPL
+  'fuel_gazole': 'Gasolio',
+  'fuel_e10': 'Benzina',
+  'fuel_sp98': 'Benzina Speciale',
+  'fuel_gplc': 'GPL'
 };
 
 /**
- * Простая и быстрая функция для парсинга CSV строк без тяжелых библиотек
+ * Исправленный парсер под новый разделитель "|" (вертикальная черта)
  */
 const parseCSV = (text) => {
-  // Разделяем по строкам, убираем пустые
   const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-  // Итальянские файлы используют точку с запятой (;) в качестве разделителя
-  return lines.map(line => line.split(';'));
+  // Теперь делим строки по вертикальной черте |
+  return lines.map(line => line.split('|'));
 };
 
 const updateItalyCache = async () => {
   try {
-    console.log('--- [Italy API] Скачивание баз данных Италии (Файл 1: АЗС)... ---');
-    const stationsRes = await axios.get(STATIONS_URL, { timeout: 20000 });
+    // Проверяем локальный файл кэша Италии
+    if (fs.existsSync(CACHE_FILE)) {
+      const stats = fs.statSync(CACHE_FILE);
+      const age = Date.now() - stats.mtimeMs;
 
-    console.log('--- [Italy API] Скачивание баз данных Италии (Файл 2: Цены)... ---');
-    const pricesRes = await axios.get(PRICES_URL, { timeout: 20000 });
+      if (age < TIME_4_HOURS) {
+        console.log('--- [Italy API] Найдена свежая копия Италии на диске. Загружаем... ---');
+        italyCache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+        console.log(`--- [Italy API] Успешно загружено из файла. Заправок: ${italyCache.length} ---`);
+        return;
+      }
+    }
+
+    console.log('--- [Italy API] Скачивание баз данных Италии из сети... ---');
+    const stationsRes = await axios.get(STATIONS_URL, { timeout: 25000 });
+    const pricesRes = await axios.get(PRICES_URL, { timeout: 25000 });
 
     const rawStations = parseCSV(stationsRes.data);
     const rawPrices = parseCSV(pricesRes.data);
 
-    // Пропускаем первую строчку заголовков в CSV
     if (rawStations.length > 0) rawStations.shift();
     if (rawPrices.length > 0) rawPrices.shift();
 
-    // 1. Индексируем станции в Map для мгновенного поиска по idImpianto
-    // Структура строки АЗС: idImpianto;Gestore;Bandiera;Tipo Impianto;Nome Impianto;Indirizzo;Comune;Provincia;Latitudine;Longitudine
+    // Структура АЗС: idimpianto|Gestore|Bandiera|Tipo Impianto|Nome Impianto|Indirizzo|Comune|Provincia|Latitudine|Longitudine
     const stationsMap = new Map();
     for (const row of rawStations) {
       if (row.length < 10) continue;
-      const id = row[0];
-      stationsMap.set(id, {
+      stationsMap.set(row[0], {
         brand: row[2] || 'Independent',
         address: row[5] || '---',
         city: row[6] || '',
@@ -57,22 +65,18 @@ const updateItalyCache = async () => {
       });
     }
 
-    // 2. Группируем цены по заправкам
-    // Структура строки цен: idImpianto;descCarburante;prezzo;isSelf
-    const mergedStations = [];
+    // Структура цен: idimpianto|descCarburante|prezzo|isSelf
     const stationsWithPrices = new Map();
-
     for (const row of rawPrices) {
       if (row.length < 4) continue;
       const id = row[0];
       const fuelName = row[1];
       const price = parseFloat(row[2]);
-      const isSelf = row[3] === '1'; // 1 — самообслуживание (обычно дешевле), 0 — с заправщиком
+      const isSelf = row[3] === '1';
 
       const stationInfo = stationsMap.get(id);
       if (!stationInfo || isNaN(stationInfo.lat) || isNaN(stationInfo.lon) || isNaN(price)) continue;
 
-      // Если станции еще нет в нашем итоговом списке цен — создаем объект
       if (!stationsWithPrices.has(id)) {
         stationsWithPrices.set(id, {
           id,
@@ -86,54 +90,44 @@ const updateItalyCache = async () => {
       }
 
       const currentStation = stationsWithPrices.get(id);
-
-      // Предпочитаем цены Self-Service ('1'), если они есть, так как водители ищут подешевле
       if (!currentStation.prices[fuelName] || isSelf) {
-        currentStation.prices[fuelName] = {
-          price: price,
-          serviceType: isSelf ? 'Self' : 'Servito'
-        };
+        currentStation.prices[fuelName] = { price, serviceType: isSelf ? 'Self' : 'Servito' };
       }
     }
 
     italyCache = Array.from(stationsWithPrices.values());
-    lastFetchTime = Date.now();
-    console.log(`--- [Italy API] База Италии успешно собрана. Активных АЗС с ценами: ${italyCache.length} ---`);
+
+    // Пишем на диск для экономии трафика
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(italyCache), 'utf8');
+    console.log(`--- [Italy API] База Италии сохранена на диск. Активных АЗС: ${italyCache.length} ---`);
 
   } catch (error) {
-    console.error('[Italy API Error] Не удалось собрать базу Италии в фоне:', error.message);
+    console.error('[Italy API Error] Ошибка сбора базы Италии:', error.message);
+    if (!italyCache && fs.existsSync(CACHE_FILE)) {
+      italyCache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+      console.log('--- [Italy API] Загружен аварийный старый кэш Италии с диска. ---');
+    }
   }
 };
 
-/**
- * Инициализация фонового обновления при старте бота
- */
 const initItalyUpdater = () => {
   updateItalyCache();
-  setInterval(updateItalyCache, CACHE_DURATION);
+  setInterval(updateItalyCache, TIME_4_HOURS);
 };
 
-/**
- * Поиск ближайших заправок по Италии в памяти
- */
 const getItalyStations = async (lat, lon, fuelKey, radiusKm = 15) => {
-  if (!italyCache) {
-    await updateItalyCache();
-  }
-
+  if (!italyCache) await updateItalyCache();
   if (!italyCache) return [];
 
   const targetFuelName = ITALY_FUEL_MAPPING[fuelKey];
   if (!targetFuelName) return [];
 
   const result = [];
-
   for (const station of italyCache) {
     const fuelData = station.prices[targetFuelName];
     if (!fuelData) continue;
 
     const distance = getDistance(lat, lon, station.lat, station.lon);
-
     if (distance <= radiusKm) {
       result.push({
         price: fuelData.price,
@@ -142,12 +136,11 @@ const getItalyStations = async (lat, lon, fuelKey, radiusKm = 15) => {
         city: station.city,
         distance: distance,
         geom: { lat: station.lat, lon: station.lon },
-        horario: `Modo: ${fuelData.serviceType}`, // Передаем тип обслуживания (Self/Servito) вместо расписания
+        horario: `Modo: ${fuelData.serviceType}`,
         isItaly: true
       });
     }
   }
-
   return result;
 };
 

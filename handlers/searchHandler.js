@@ -7,7 +7,11 @@ const { parseFrenchHours } = require('../utils/timeParser');
 const { getMapUrl } = require('../utils/maps');
 const { handleUnexpectedError } = require('../utils/errors');
 const { getTxt } = require('../utils/text');
-const { getSpainStations } = require('../utils/spainApi'); // Наш будущий модуль для Испании
+const { getSpainStations } = require('../utils/spainApi');
+const { getAustriaStations } = require('../utils/austriaApi');
+const { getItalyStations } = require('../utils/italyApi');
+const { getCzechStations } = require('../utils/czechApi'); // Раскомментировали, чтобы не было ReferenceError
+const { getBelgiumStations } = require('../utils/belgiumApi');
 
 const handleSearchRequest = async (ctx) => {
   try {
@@ -25,7 +29,6 @@ const handleSearchRequest = async (ctx) => {
     const loadingText = getTxt(ctx, 'searching_fuel').replace('{fuel}', fuel.label);
     await ctx.editMessageText(loadingText).catch(() => { });
 
-    // Оъявляем общие переменные для результатов на верхнем уровне функции
     let records = [];
     const seenAddresses = new Set();
 
@@ -34,7 +37,6 @@ const handleSearchRequest = async (ctx) => {
     // ==========================================
 
     if (country === 'DE') {
-      // === ЛОГИКА ДЛЯ ГЕРМАНИИ ===
       const { lat, lon } = ctx.session.userCoords || { lat: 52.52, lon: 13.40 };
       const deFuelType = fuelKey === 'fuel_gazole' ? 'diesel' :
         fuelKey === 'fuel_e10' ? 'e10' : 'e5';
@@ -57,7 +59,6 @@ const handleSearchRequest = async (ctx) => {
         return ctx.replyWithMarkdown(errorText, Markup.inlineKeyboard([[Markup.button.callback(getTxt(ctx, 'main_menu'), 'main_menu')]]));
       }
 
-      // Сразу маппим немецкие данные в наш стандарт
       records = validStations.map(station => ({
         price: station.price,
         name: station.name ? ` — ${station.brand || station.name}` : '',
@@ -67,13 +68,15 @@ const handleSearchRequest = async (ctx) => {
         geom: { lat: station.lat, lon: station.lng },
         isOpen: station.isOpen,
         isGerman: true,
-        isSpain: false
+        isSpain: false,
+        isAustria: false,
+        isItaly: false,
+        isCzech: false,
+        isBelgium: false
       }));
 
     } else if (country === 'ES') {
-      // === ЛОГИКА ДЛЯ ИСПАНИИ ===
       const { lat, lon } = ctx.session.userCoords || { lat: 40.4167, lon: -3.7037 };
-
       const spainStations = await getSpainStations(lat, lon, fuelKey, 15);
 
       if (spainStations.length === 0) {
@@ -81,12 +84,94 @@ const handleSearchRequest = async (ctx) => {
         return ctx.replyWithMarkdown(errorText, Markup.inlineKeyboard([[Markup.button.callback(getTxt(ctx, 'main_menu'), 'main_menu')]]));
       }
 
-      // Маппим испанские заправки под наш стандарт
       records = spainStations.map(station => ({
         ...station,
         isOpen: true,
         isGerman: false,
-        isSpain: true
+        isSpain: true,
+        isAustria: false,
+        isItaly: false,
+        isCzech: false,
+        isBelgium: false
+      }));
+
+    } else if (country === 'AT') {
+      const { lat, lon } = ctx.session.userCoords || { lat: 48.2082, lon: 16.3738 };
+      const austriaStations = await getAustriaStations(lat, lon, fuelKey);
+
+      if (austriaStations.length === 0) {
+        const errorText = getTxt(ctx, 'error_coords_not_found').replace('{location}', location).replace('{fuel}', fuel.label);
+        return ctx.replyWithMarkdown(errorText, Markup.inlineKeyboard([[Markup.button.callback(getTxt(ctx, 'main_menu'), 'main_menu')]]));
+      }
+
+      records = austriaStations.map(station => ({
+        ...station,
+        isGerman: false,
+        isSpain: false,
+        isAustria: true,
+        isItaly: false,
+        isCzech: false,
+        isBelgium: false
+      }));
+
+    } else if (country === 'IT') {
+      const { lat, lon } = ctx.session.userCoords || { lat: 41.9028, lon: 12.4964 };
+      const italyStations = await getItalyStations(lat, lon, fuelKey, 15);
+
+      if (italyStations.length === 0) {
+        const errorText = getTxt(ctx, 'error_coords_not_found').replace('{location}', location).replace('{fuel}', fuel.label);
+        return ctx.replyWithMarkdown(errorText, Markup.inlineKeyboard([[Markup.button.callback(getTxt(ctx, 'main_menu'), 'main_menu')]]));
+      }
+
+      records = italyStations.map(station => ({
+        ...station,
+        isOpen: true,
+        isGerman: false,
+        isSpain: false,
+        isAustria: false,
+        isItaly: true,
+        isCzech: false,
+        isBelgium: false
+      }));
+
+    } else if (country === 'CZ') {
+      const { lat, lon } = ctx.session.userCoords || { lat: 50.0755, lon: 14.4378 };
+      const czechStations = await getCzechStations(lat, lon, fuelKey, 15);
+
+      if (czechStations.length === 0) {
+        const errorText = getTxt(ctx, 'error_coords_not_found').replace('{location}', location).replace('{fuel}', fuel.label);
+        return ctx.replyWithMarkdown(errorText, Markup.inlineKeyboard([[Markup.button.callback(getTxt(ctx, 'main_menu'), 'main_menu')]]));
+      }
+
+      records = czechStations.map(station => ({
+        ...station,
+        isOpen: true,
+        isGerman: false,
+        isSpain: false,
+        isAustria: false,
+        isItaly: false,
+        isCzech: true,
+        isBelgium: false
+      }));
+
+    } else if (country === 'BE') {
+      const { lat, lon } = ctx.session.userCoords || { lat: 50.8503, lon: 4.3517 };
+      const belgiumStations = await getBelgiumStations(lat, lon, fuelKey, 15);
+
+      if (belgiumStations.length === 0) {
+        const errorText = getTxt(ctx, 'error_coords_not_found').replace('{location}', location).replace('{fuel}', fuel.label);
+        return ctx.replyWithMarkdown(errorText, Markup.inlineKeyboard([[Markup.button.callback(getTxt(ctx, 'main_menu'), 'main_menu')]]));
+      }
+
+      records = belgiumStations.map(station => ({
+        ...station,
+        isOpen: true,
+        isGerman: false,
+        isSpain: false,
+        isAustria: false,
+        isItaly: false,
+        isCzech: false,
+        isBelgium: true
       }));
 
     } else {
@@ -120,7 +205,6 @@ const handleSearchRequest = async (ctx) => {
         return ctx.replyWithMarkdown(errorText, Markup.inlineKeyboard([[Markup.button.callback(getTxt(ctx, 'main_menu'), 'main_menu')]]));
       }
 
-      // Маппим французские данные под наш стандарт
       records = response.data.results.map(station => {
         let distance = Infinity;
         if (ctx.session?.userCoords && station.geom) {
@@ -137,30 +221,34 @@ const handleSearchRequest = async (ctx) => {
           horaires_automate_24_24: station.horaires_automate_24_24,
           horaires_jour: station.horaires_jour,
           isGerman: false,
-          isSpain: false
+          isSpain: false,
+          isAustria: false,
+          isItaly: false,
+          isCzech: false,
+          isBelgium: false // Добавили корректный дефолт для Франции
         };
       });
     }
 
     // ==========================================
-    // 2. ОБЩАЯ ФИЛЬТРАЦИЯ И СОРТИРОВКА (Для всех стран)
+    // 2. ОБЩАЯ ФИЛЬТРАЦИЯ И СОРТИРОВКА
     // ==========================================
 
-    // Фильтрация дубликатов по адресу
     records = records.filter(station => {
+      if (station.isAustria || station.isSpain || station.isItaly || station.isCzech || station.isBelgium) return true;
+
       const addr = station.address.toLowerCase().trim();
       if (seenAddresses.has(addr)) return false;
       seenAddresses.add(addr);
       return true;
     });
 
-    // Фильтр "Открыто сейчас"
     if (filterType === 'open') {
       records = records.filter(station => {
-        if (station.isGerman) {
+        if (station.isGerman || station.isAustria) {
           return station.isOpen === true;
-        } else if (station.isSpain) {
-          return true; // Для Испании пропускаем (нет онлайн-флага в API)
+        } else if (station.isSpain || station.isItaly || station.isCzech || station.isBelgium) {
+          return true;
         } else {
           const hoursStatus = parseFrenchHours(station, 'ru');
           return hoursStatus.includes('24/7') || hoursStatus.toLowerCase().includes('открыто');
@@ -173,14 +261,12 @@ const handleSearchRequest = async (ctx) => {
       return ctx.replyWithMarkdown(closedText, Markup.inlineKeyboard([[Markup.button.callback(getTxt(ctx, 'main_menu'), 'main_menu')]]));
     }
 
-    // Сортировка по типу запроса пользователя
     if (sortType === 'dist') {
       records.sort((a, b) => a.distance - b.distance);
     } else {
       records.sort((a, b) => a.price - b.price);
     }
 
-    // Обрезаем массив до нашего лимита
     records = records.slice(0, config.STATIONS_LIMIT);
 
     // ==========================================
@@ -194,9 +280,9 @@ const handleSearchRequest = async (ctx) => {
       const distInfo = station.distance !== Infinity ? ` 🚗 *(${station.distance.toFixed(1)} км)*` : '';
 
       let timeInfo;
-      if (station.isGerman) {
+      if (station.isGerman || station.isAustria) {
         timeInfo = station.isOpen ? getTxt(ctx, 'time_24_7') : getTxt(ctx, 'time_closed_today');
-      } else if (station.isSpain) {
+      } else if (station.isSpain || station.isItaly || station.isCzech || station.isBelgium) {
         timeInfo = station.horario || '---';
       } else {
         timeInfo = parseFrenchHours(station, 'ru');
